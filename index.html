@@ -653,14 +653,13 @@ a.btn:hover {
   background-color: #0056b3;
 }
 
-
 </style>
 </head>
 <body>
 
 <script>
 // ✅ PASTE YOUR SCRIPT URL HERE
-const WEB_APP_URL = "https://script.google.com/macros/s/AKfycby2ph2gSJMBgVjduqlzuv7GgTBDWvXDFqJoYc55p1IcfbKVzDtiJFvv9qu4tnE_jZ8p/exec";
+const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzeCbTpUQ49T2S4jqeUNnZh11eibUNMV2iKFoZ1tNBDFoX8vnoR5uFYfe7y8g26rr8K/exec";
 
 // ===== User controls (show / hide + logout binding) =====
 function showUserControls(username) {
@@ -765,7 +764,7 @@ async function showLoginForm() {
       padding:20px;
       border-radius:8px;
       text-align:center;
-      min-width:280px;
+      min-width:220px;
       max-width:320px;
       box-shadow:0 2px 8px rgba(0,0,0,0.3);
     `;
@@ -905,7 +904,7 @@ function resetIdleTimer() {
   idleTimer = setTimeout(() => {
     alert("⏳ Session expired due to inactivity");
     doLogout();
-  }, 5 * 60 * 1000); // 5 minutes
+  }, 10 * 60 * 1000); // 5 minutes
 }
 ["mousemove","keydown","click","scroll"].forEach(evt => {
   document.addEventListener(evt, resetIdleTimer);
@@ -978,27 +977,112 @@ async function doLogout() {
 }
 
 
-// ===== After Login Init =====
+// ===== afterLoginInit (REPLACE existing function with this block) =====
 async function afterLoginInit() {
-  console.log("✅ Logged in. Token:", window.AUTH_TOKEN);
+  // show full-screen loader immediately
+  showFullScreenLoader("Preparing your workspace…");
 
-  // Load Highcharts libraries dynamically
-  await loadHighchartsLibs();
+  // give browser two animation frames so overlay actually paints
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
-  // Load prompt enhancer styles (optional)
-  if (typeof loadStyles === "function") {
-    try { await loadStyles(); } catch(e) { console.warn("loadStyles failed", e); }
+  try {
+    // 1) load chart libs (if available)
+    if (typeof loadHighchartsLibs === "function") {
+      try {
+        await loadHighchartsLibs();
+      } catch (err) {
+        console.warn("loadHighchartsLibs failed:", err);
+      }
+    }
+
+    // small yield so scripts can register globals
+    await new Promise(r => setTimeout(r, 30));
+
+    // 2) optional style loaders (safe calls)
+    if (typeof loadStyles === "function") {
+      try { await loadStyles(); } catch (e) { console.warn("loadStyles failed:", e); }
+    }
+    if (typeof fetchStyleDataOnce === "function") {
+      try { await fetchStyleDataOnce(); } catch (e) { console.warn("fetchStyleDataOnce failed:", e); }
+    }
+
+    // 3) load cached enhancer styles (safe)
+    if (typeof loadEnhancerStylesSimple === "function") {
+      try { await loadEnhancerStylesSimple(); } catch (e) { console.warn("loadEnhancerStylesSimple failed:", e); }
+    }
+
+    // 4) fetch chart configs and initialize the UI/chart
+    try {
+      await fetchChartConfigs();
+    } catch (e) {
+      console.warn("fetchChartConfigs failed:", e);
+    }
+
+    try {
+      if (typeof ensureTableDataAndInit === "function") {
+        await ensureTableDataAndInit();
+      }
+    } catch (e) {
+      console.error("ensureTableDataAndInit failed:", e);
+      // attempt to still render a fallback chart if possible
+      try { if (typeof createChart === "function") createChart('bar-vertical'); } catch(e2){ console.warn(e2); }
+    }
+
+  } catch (err) {
+    console.error("afterLoginInit top-level error:", err);
+  } finally {
+    // always hide loader at the end (ensures not left stuck)
+    hideFullScreenLoader();
   }
-
-  // Load chart configs
-  await fetchChartConfigs();
-  ensureTableDataAndInit();
 }
+
 
 // ===== Run on Page Load =====
 window.addEventListener("load", async () => {
+  const savedToken = localStorage.getItem("AUTH_TOKEN");
+  if (savedToken) {
+    try {
+      const resp = await fetch(`${WEB_APP_URL}?action=validateSession&token=${encodeURIComponent(savedToken)}`);
+      const data = await resp.json();
+
+      if (data.success) {
+        // ✅ Session still valid → skip login
+        window.AUTH_TOKEN = savedToken;
+        isLoggedIn = true;
+
+        // Fetch logo again
+        try {
+          const respLogo = await fetch(`${WEB_APP_URL}?action=getImage&token=${savedToken}`);
+          const logoData = await respLogo.json();
+          if (logoData.success && logoData.image) {
+            const imgEl = document.getElementById("dynamic-image");
+            if (imgEl) {
+              imgEl.src = logoData.image.startsWith("data:image")
+                ? logoData.image
+                : "data:image/png;base64," + logoData.image;
+            }
+          }
+        } catch (e) {
+          console.warn("Logo fetch failed", e);
+        }
+
+        // Continue to app
+        await afterLoginInit();
+        return;
+      } else {
+        // Expired → clear and fall back to login
+        localStorage.removeItem("AUTH_TOKEN");
+      }
+    } catch (err) {
+      console.warn("validateSession error:", err);
+      localStorage.removeItem("AUTH_TOKEN");
+    }
+  }
+
+  // If no valid session, show login form
   const ok = await showLoginForm();
-  if (ok) {
+  if (ok && window.AUTH_TOKEN) {
+    localStorage.setItem("AUTH_TOKEN", window.AUTH_TOKEN);
     await afterLoginInit();
   }
 });
@@ -1061,29 +1145,126 @@ async function loadHighchartsLibs() {
   }
 }
 
-// ===== Initialize UI/Table/Chart =====
+// ===== ensureTableDataAndInit (REPLACE with this block) =====
 async function ensureTableDataAndInit() {
-  await fetchChartConfigs();
+  // attempt to fetch updated configs (no throw)
+  try { await fetchChartConfigs(); } catch (e) { console.warn("fetchChartConfigs (in ensure) failed:", e); }
 
-  // create chart buttons
-  if (typeof initButtons === "function") initButtons();
+  // create chart buttons if function exists
+  try { if (typeof initButtons === "function") await initButtons(); } catch (e) { console.warn("initButtons failed:", e); }
 
-  // default selection → Chart01 (Bar Vertical)
-  window.currentChartKey = 'Chart01';
-  const firstBtn = document.querySelector('#button-bar button'); 
-  if (firstBtn) firstBtn.classList.add('active');
+  // default selection → Chart01
+  try {
+    window.currentChartKey = 'Chart01';
+    const firstBtn = document.querySelector('#button-bar button');
+    if (firstBtn) {
+      document.querySelectorAll('#button-bar button').forEach(b => b.classList.remove('active'));
+      firstBtn.classList.add('active');
+    }
+  } catch (e) {}
 
-  // build left frame table from GS data
-  const commonData = chartConfigs.TABLE.defaultData;
-  if (typeof populateTable === "function") populateTable(commonData, 'bar-vertical');
+  // build left frame table from config data if available
+  try {
+    const commonData = (chartConfigs && chartConfigs.TABLE && chartConfigs.TABLE.defaultData) ? chartConfigs.TABLE.defaultData : null;
+    if (commonData && typeof populateTable === "function") {
+      populateTable(commonData, 'bar-vertical');
+    }
+  } catch (e) { console.warn("populateTable failed:", e); }
 
-  // toggle relevant controls
-  if (typeof toggleControls === "function") toggleControls('bar-vertical');
+  // show relevant controls
+  try { if (typeof toggleControls === "function") toggleControls('bar-vertical'); } catch (e) {}
 
-  // render initial chart
-  if (typeof createChart === "function") createChart('bar-vertical');
+  // render initial chart (use spinner-aware wrapper if present)
+  try {
+    if (typeof createChartWithSpinner === "function") {
+      await createChartWithSpinner('bar-vertical');
+    } else if (typeof createChart === "function") {
+      createChart('bar-vertical');
+    }
+  } catch (e) {
+    console.error("Initial chart render failed:", e);
+  }
 }
 
+// ===== Full-screen loader helpers =====
+function showFullScreenLoader(message) {
+  let overlay = document.getElementById("__icd_fullscreen_loader");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "__icd_fullscreen_loader";
+    overlay.style = `
+      position: fixed;
+      top:0; left:0; right:0; bottom:0;
+      background: rgba(0,0,0,0.55);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      z-index:99999;
+      backdrop-filter: blur(2px);
+    `;
+    overlay.innerHTML = `
+      <div style="text-align:center; color:#fff; font-family:Arial;">
+        <div class="spinner"></div>
+        <div id="__icd_fullscreen_loader_msg" style="font-weight:600; font-size:14px; margin-top:8px;"></div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    // add spinner animation
+    const style = document.createElement("style");
+    style.innerHTML = `
+      #__icd_fullscreen_loader .spinner {
+        border: 6px solid rgba(255,255,255,0.2);
+        border-top: 6px solid #fff;
+        border-radius: 50%;
+        width: 48px; height: 48px;
+        animation: spin 1s linear infinite;
+        margin: auto;
+      }
+      @keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+    `;
+    document.head.appendChild(style);
+  }
+  const msgEl = document.getElementById("__icd_fullscreen_loader_msg");
+  if (msgEl) msgEl.textContent = message || "Loading…";
+  overlay.style.display = "flex";
+}
+
+function hideFullScreenLoader() {
+  const overlay = document.getElementById("__icd_fullscreen_loader");
+  if (overlay) overlay.style.display = "none";
+}
+
+// ===== createChartWithSpinner (REPLACE with this block) =====
+async function createChartWithSpinner(chartType) {
+  // detect if a full-screen loader is already active
+  const existingOverlay = document.getElementById("__icd_fullscreen_loader");
+  const loaderAlreadyVisible = existingOverlay && existingOverlay.style.display !== "none";
+
+  // only show loader if not already visible
+  if (!loaderAlreadyVisible) showFullScreenLoader("Rendering chart...");
+
+  try {
+    // call the actual createChart (may be sync or return a promise)
+    if (typeof createChart === "function") {
+      const res = createChart(chartType);
+      if (res && typeof res.then === "function") {
+        await res;
+      } else {
+        // give the browser a tick so synchronous rendering can start and paint
+        await new Promise(r => requestAnimationFrame(r));
+      }
+    } else {
+      console.warn("createChart is not defined");
+    }
+  } catch (err) {
+    console.error("createChartWithSpinner error:", err);
+    throw err;
+  } finally {
+    // hide loader only if we showed it here
+    if (!loaderAlreadyVisible) hideFullScreenLoader();
+  }
+}
 
 // ===== Initialize after login =====
 async function ensureTableDataAndInit() {
@@ -1182,54 +1363,64 @@ async function ensureTableDataAndInit() {
                     <div id="bar-controls-inline" class="option-controls" style="display:none">
                         <label>
                             Bar width
-                            <input id="bar-width-input" type="number" min="0" max="100" step="2" value="28" style="width:70px">
+                            <input id="bar-width-input" type="number" min="0" max="100" step="2" value="22" style="Width:35px">
                         </label>
                         <label>
                             Border radius
-                            <input id="border-radius-input" type="number" min="0" max="100" step="1" value="50" style="width:70px">
+                            <input id="border-radius-input" type="number" min="0" max="100" step="1" value="50" style="Width:35px">
                         </label>
                     </div>
                     <div id="line-controls" class="option-controls" style="display:none">
                         <label>
                             Line width
-                            <input id="line-thickness-input" type="number" min="1" max="10" step="1" value="2" style="width:70px">
+                            <input id="line-thickness-input" type="number" min="1" max="10" step="1" value="3" style="Width:35px">
                         </label>
                         <label>
                             Marker size
-                            <input id="circle-radius-input" type="number" min="0" max="20" step="1" value="8" style="width:70px">
+                            <input id="circle-radius-input" type="number" min="0" max="20" step="1" value="8" style="Width:35px">
                         </label>
                     </div>
                     <div id="donut-radius-controls" class="option-controls" style="display:none">
                         <label>
                             Inner radius
-                            <input id="donut-inner-radius-input" type="number" min="0" max="90" step="1" value="70" style="width:70px">%
+                            <input id="donut-inner-radius-input" type="number" min="0" max="90" step="1" value="70" style="Width:35px">%
                         </label>
                         <label>
                             Slice radius
-                            <input id="pie-border-radius-input" type="number" min="0" max="30" step="1" value="7" style="width:70px">
+                            <input id="pie-border-radius-input" type="number" min="0" max="30" step="1" value="7" style="Width:35px">
                         </label>
                     </div>
                     <div id="rose-radius-controls" class="option-controls" style="display:none">
                         <label>
                             Inner radius
-                            <input id="rose-inner-radius-input" type="number" min="0" max="90" step="1" value="10" style="width:70px">%
+                            <input id="rose-inner-radius-input" type="number" min="0" max="90" step="1" value="10" style="Width:35px">%
                         </label>
                     </div>
                     <div id="corner-controls" class="option-controls" style="display:none">
                         <label>
                             Corner
-                            <input id="corner-radius-input" type="number" min="0" max="50" step="1" value="7" style="width:70px">
+                            <input id="corner-radius-input" type="number" min="0" max="50" step="1" value="7" style="Width:35px">
                         </label>
                     </div>
                     <div class="option-controls" style="font-size:12px;">
                         <label style="margin-left:6px;">
                             <input type="checkbox" id="show-elements">
-                            Show labels/grid/legend
+                            Show Labels
                         </label>
                     </div>
+					<div id="pyramid-controls" class="option-controls" style="display:none; font-size:12px;">
+					  <label style="margin-left:6px;">
+						Sort Order
+						<button id="pyramid-toggle" onclick="togglePyramidOrder()" 
+						  style="cursor: pointer; background: transparent; border: 1px solid #ccc; padding: 0 3px; color: black; height: 20px; width: 20px; margin-left:6px;">
+						  ⇅
+						</button>
+					  </label>
+					</div>
+
                     <div id="assembly-controls" style="display:flex; gap:10px; align-items:center; font-size:12px;">
-                        <label>Arc Size <input type="number" id="assembly-arc-size" value="100" style="width:60px; font-size:12px;"></label>
-                        <label>Arc Pos <input type="number" id="assembly-arc-pos" value="70" style="width:60px; font-size:12px;"></label>
+                        <label>Arc Size <input type="number" id="assembly-arc-size" value="100" style="Width:35px; font-size:12px;"></label>
+                        <label>Arc Pos <input type="number" id="assembly-arc-pos" value="70" style="Width:35px; font-size:12px;"></label>
 						<div id="assembly-color-pickers" style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;"></div>
                     </div>
                 </div>
@@ -1464,7 +1655,13 @@ function toggleControls(chartType) {
     assemblyControls.style.display = 'flex';
     paletteControls.style.display = 'none';
   }
-
+  else if (chartType === 'pyramid-bar') {
+	  paletteControls.style.display = 'block';
+	  document.getElementById('pyramid-controls').style.display = 'flex';
+	} else {
+	  document.getElementById('pyramid-controls').style.display = 'none';
+	}
+	
   // Enable add column only for multi-series chart types
   const multiSeriesKeys = ['Chart01','Chart02','Chart07','Chart08','Chart09'];
   document.getElementById('btn-add-col').disabled = !multiSeriesKeys.includes(currentChartKey);
@@ -1555,6 +1752,34 @@ function populateTable(gsData){
 
   updateJsonMirror();
 }
+
+// === add Rose helper row (non-editable, non-deletable) ===
+function addRoseHelperRowIfNeeded(chartType) {
+  if (chartType !== 'rose') return;
+
+  const tbl = document.getElementById('data-table');
+  if (!tbl || !tbl.rows.length) return;
+
+  // check if helper already exists (look for data-rose-helper attr)
+  const last = tbl.rows[tbl.rows.length - 1];
+  if (last && last.dataset && last.dataset.roseHelper === "1") return;
+
+  const tr = tbl.insertRow(-1);
+  tr.dataset.roseHelper = "1";
+
+  const tdName = tr.insertCell(0);
+  const tdVal  = tr.insertCell(1);
+
+  tdName.textContent = `Item-${tbl.rows.length - 1}`;
+  tdVal.textContent  = "0";
+
+  // style as disabled
+  tdName.style.background = "#f5f5f5";
+  tdVal.style.background  = "#f5f5f5";
+  tdName.style.color = "#666";
+  tdVal.style.color  = "#666";
+}
+
 
 /* Add / Remove Row / Column functions */
 function addRow(){
@@ -1656,76 +1881,147 @@ function readTable() {
   return { xAxisData: xAxisData, series: series };
 }
 
-/* ================= Convert table -> chart-specific JSON ================= */
-function getTableDataAsJson(type){
-  const gs = readTable();
-  const cats = gs.xAxisData || [];
-  const seriesArr = gs.series || [];
+/* ============================================================
+   Pyramid Order Switcher
+   ============================================================ */
 
-  // Helper function to combine and sort data
-  const sortData = (categories, seriesData) => {
+window.pyramidSortOrder = "desc"; // default
+
+function togglePyramidOrder() {
+  window.pyramidSortOrder = (window.pyramidSortOrder === "desc" ? "asc" : "desc");
+  createChart("pyramid-bar");
+}
+
+/* ============================================================
+   getTableDataAsJson
+   ============================================================ */
+function getTableDataAsJson(type) {
+  // ---- read table ----
+  const tbl = dataTable();
+  const rows = tbl ? [...tbl.rows] : [];
+  if (!rows.length) return {};
+
+  const headerCells = [...rows[0].cells].slice(0, -1);
+  const headers = headerCells.map((_, i) => (i === 0 ? "Category" : `Series-${i}`));
+  const body = rows
+    .slice(1)
+    .map(tr => [...tr.cells].slice(0, -1).map(td => td.querySelector("input")?.value ?? ""));
+
+  const xAxisData = body.map(r => String(r[0] ?? ""));
+  const series = headers.slice(1).map((h, ci) => ({
+    name: h,
+    data: body.map(r => safeNum(r[ci + 1]))
+  }));
+
+  // ---------- helper for sorting ----------
+  const sortDesc = (categories, seriesData) => {
     const combined = categories.map((c, i) => ({
       category: String(c || `Item-${i + 1}`),
       value: Number(seriesData[0]?.data?.[i] || 0)
     }));
-
-    // Sort the combined array in descending order by value
     combined.sort((a, b) => b.value - a.value);
-
-    const sortedCategories = combined.map(item => item.category);
-    const sortedValues = combined.map(item => item.value);
-
-    return { sortedCategories, sortedValues };
+    return {
+      sortedCategories: combined.map(x => x.category),
+      sortedValues: combined.map(x => x.value)
+    };
   };
 
-  // ✅ NEW CONSOLIDATED LOGIC for all sorting-dependent charts
-  if (type === 'pyramid-bar' || type === 'polar-tangential-bar' || type === 'single-polar-bar') {
-    if (seriesArr.length <= 1) {
-      const { sortedCategories, sortedValues } = sortData(cats, seriesArr);
-      if (type === 'pyramid-bar') {
-        const pairs = sortedCategories.map((c, i) => [c, sortedValues[i]]);
-        return {
-          xAxisData: sortedCategories,
-          series: [{ name: seriesArr[0]?.name || 'Series-1', data: sortedValues }],
-          dataPairs: pairs
-        };
+  // === polar-tangential (always sorted descending) ===
+  if (type === "polar-tangential-bar") {
+    const { sortedCategories, sortedValues } = sortDesc(xAxisData, series);
+    return { categories: sortedCategories, data: sortedValues };
+  }
+
+  // === pyramid-bar (supports single + multiple columns) ===
+  if (type === "pyramid-bar") {
+    if (series.length <= 1) {
+      let pairs = xAxisData.map((c, i) => [String(c || `Item-${i+1}`), Number(series[0]?.data[i] || 0)]);
+
+      if (window.pyramidSortOrder === "asc") {
+        pairs.sort((a, b) => a[1] - b[1]);
+      } else {
+        pairs.sort((a, b) => b[1] - a[1]);
       }
-      return { categories: sortedCategories, data: sortedValues };
-    } else {
-      // For multi-series, we sort by the first series
-      const { sortedCategories } = sortData(cats, seriesArr);
-      const seriesPairs = seriesArr.map(s => {
-        const reorderedData = sortedCategories.map(sortedCat => {
-          const originalIndex = cats.indexOf(sortedCat);
-          return s.data[originalIndex];
-        });
-        return {
-          name: s.name,
-          dataPairs: sortedCategories.map((c, idx) => [c, Number(reorderedData[idx] || 0)]),
-          data: reorderedData
-        };
-      });
+
+      const sortedCats = pairs.map(p => p[0]);
+      const sortedVals = pairs.map(p => p[1]);
+
       return {
-        xAxisData: sortedCategories,
-        series: seriesPairs.map(s => ({ name: s.name, data: s.data })),
-        seriesPairs
+        xAxisData: sortedCats,
+        series: [
+          {
+            name: series[0]?.name || "Series-1",
+            data: sortedVals,
+            colorByPoint: true
+          }
+        ]
       };
+    } else {
+      return { xAxisData, series };
     }
   }
 
-  // Donut/Half-donut/Rose expect array of {name,value}
-  if(['donut','half-donut','rose','assembly-seats'].includes(type)){
-    const vals = seriesArr[0]?.data || [];
-    const data = cats.map((c,i)=> ({ name: c, value: Number(vals[i]||0) }));
+  // === single-polar-bar ===
+  if (type === "single-polar-bar") {
+    return { categories: xAxisData, data: series[0]?.data || [] };
+  }
+
+  // === bar vertical / bar horizontal / polar-bar-series ===
+  if (["bar-vertical", "bar-horizontal", "polar-bar-series"].includes(type)) {
+    if (series.length <= 1) {
+      const values = series[0]?.data || [];
+      return {
+        xAxisData,
+        series: [
+          {
+            name: series[0]?.name || "Series-1",
+            data: values,
+            colorByPoint: true
+          }
+        ]
+      };
+    }
+    return { xAxisData, series };
+  }
+
+  // === line chart ===
+  if (type === "line") {
+    const cleanSeries = series.map(s => ({
+      name: s.name,
+      data: s.data.slice(0, xAxisData.length)
+    }));
+    return { xAxisData, series: cleanSeries };
+  }
+
+  // === donut / half-donut / rose / assembly-seats ===
+  if (["donut", "half-donut", "rose"].includes(type)) {
+    const vals = series[0]?.data || [];
+    const data = xAxisData.map((c, i) => ({
+      name: c,
+      value: Number(vals[i] || 0)
+    }));
+
+    if (type === "rose") {
+      // 1. Sort descending by value
+      data.sort((a, b) => (b.value || 0) - (a.value || 0));
+
+      // 2. Add blank row if not already present
+      if (!data.some(d => d.name === "" && d.value === 0)) {
+        data.push({ name: "", value: 0 });
+      }
+    }
+
     return { data };
   }
 
-  // Default (bar, line, polar-bar-series) - keep neutral format
+  // === fallback ===
   return {
-    xAxisData: cats,
-    series: seriesArr.map(s => ({ name: s.name, data: s.data.slice() }))
+    xAxisData,
+    series: series.map(s => ({ name: s.name, data: s.data.slice() }))
   };
 }
+
+
 
 /* ================= Palette helpers ================= */
 function applyPaletteForMode(){
@@ -1780,39 +2076,65 @@ function renderChart(type, data){
   };
 
   try {
-    // Bar Vertical
-    if(type === 'bar-vertical'){
-      const sArr = data.series || [];
-      const seriesData = (sArr.length === 1)
-        ? [{ name: sArr[0].name || 'Series-1', data: (sArr[0].data||[]).map((v,i)=>({ y: Number(v||0), color: palette[i % palette.length] })) }]
-        : sanitizeSeries(sArr, palette);
-      currentChart = Highcharts.chart({
-        ...common,
-        chart: { ...common.chart, type: 'column' },
-        xAxis: { categories: data.xAxisData || [], labels: { enabled: showElements }, gridLineWidth: showElements ? 1 : 0 },
-        yAxis: { title: { text: '' }, labels: { enabled: showElements }, gridLineWidth: showElements ? 1 : 0 },
-        plotOptions: { column: { pointWidth: barWidth, borderRadius: borderRadius, dataLabels: { enabled: showElements } } },
-        series: seriesData
-      });
-      return;
-    }
+	// Bar Vertical
+	if(type === 'bar-vertical'){
+	  const sArr = data.series || [];
+	  const seriesData = (sArr.length === 1)
+		? [{ name: sArr[0].name || 'Series-1', data: (sArr[0].data||[]).map((v,i)=>({ y: Number(v||0), color: palette[i % palette.length] })) }]
+		: sanitizeSeries(sArr, palette);
 
-    // Bar Horizontal
-    if(type === 'bar-horizontal'){
-      const sArr = data.series || [];
-      const seriesData = (sArr.length === 1)
-        ? [{ name: sArr[0].name || 'Series-1', data: (sArr[0].data||[]).map((v,i)=>({ y: Number(v||0), color: palette[i % palette.length] })) }]
-        : sanitizeSeries(sArr, palette);
-      currentChart = Highcharts.chart({
-        ...common,
-        chart: { ...common.chart, type: 'bar' },
-        xAxis: { categories: data.xAxisData || [], labels: { enabled: showElements }, gridLineWidth: showElements ? 1 : 0 },
-        yAxis: { min: 0, title: { text: '' }, labels: { enabled: showElements }, gridLineWidth: showElements ? 1 : 0 },
-        plotOptions: { series: { pointWidth: barWidth, borderRadius: borderRadius, dataLabels: { enabled: showElements } } },
-        series: seriesData
-      });
-      return;
-    }
+	  const pointPadding = 0.2; // space between bars in same category (0–0.5)
+	  const groupPadding = 0.3; // space between series groups (0–0.5)
+
+	  currentChart = Highcharts.chart({
+		...common,
+		chart: { ...common.chart, type: 'column' },
+		xAxis: { categories: data.xAxisData || [], labels: { enabled: showElements }, gridLineWidth: showElements ? 1 : 0 },
+		yAxis: { title: { text: '' }, labels: { enabled: showElements }, gridLineWidth: showElements ? 1 : 0 },
+		plotOptions: { 
+		  column: { 
+			pointWidth: barWidth, 
+			borderRadius: borderRadius, 
+			borderWidth: 0,        // remove outline
+			pointPadding: pointPadding,
+			groupPadding: groupPadding,
+			dataLabels: { enabled: showElements } 
+		  } 
+		},
+		series: seriesData
+	  });
+	  return;
+	}
+
+	// Bar Horizontal
+	if(type === 'bar-horizontal'){
+	  const sArr = data.series || [];
+	  const seriesData = (sArr.length === 1)
+		? [{ name: sArr[0].name || 'Series-1', data: (sArr[0].data||[]).map((v,i)=>({ y: Number(v||0), color: palette[i % palette.length] })) }]
+		: sanitizeSeries(sArr, palette);
+
+	  const pointPadding = 0.2; // space between bars in same category
+	  const groupPadding = 0.1; // space between series groups
+
+	  currentChart = Highcharts.chart({
+		...common,
+		chart: { ...common.chart, type: 'bar' },
+		xAxis: { categories: data.xAxisData || [], labels: { enabled: showElements }, gridLineWidth: showElements ? 1 : 0 },
+		yAxis: { min: 0, title: { text: '' }, labels: { enabled: showElements }, gridLineWidth: showElements ? 1 : 0 },
+		plotOptions: { 
+		  series: { 
+			pointWidth: barWidth, 
+			borderRadius: borderRadius, 
+			borderWidth: 0,       // remove outline
+			pointPadding: pointPadding,
+			groupPadding: groupPadding,
+			dataLabels: { enabled: showElements } 
+		  } 
+		},
+		series: seriesData
+	  });
+	  return;
+	}
 
     // Donut
     if(type === 'donut'){
@@ -2110,58 +2432,38 @@ function sortTable() {
     }
     rows.forEach(row => tbody.appendChild(row));
     createChart();
-}
-
-/* ================= Convert neutral table -> chart-specific JSON ================= */
-function getTableDataAsJson(type){
-  const tbl = dataTable();
-  const rows = tbl ? [...tbl.rows] : [];
-  if(!rows.length) return {};
-  const headerCells = [...rows[0].cells].slice(0,-1);
-  const headers = headerCells.map((_,i)=> i===0 ? 'Category' : `Series-${i}`);
-  const body = rows.slice(1).map(tr => [...tr.cells].slice(0,-1).map(td => td.querySelector('input')?.value ?? ''));
-  const xAxisData = body.map(r => String(r[0] ?? ''));
-  const series = headers.slice(1).map((h,ci) => ({ name: h, data: body.map(r => safeNum(r[ci+1])) }));
-
-  // ✅ NEW CONSOLIDATED LOGIC for sorting-dependent charts
-  if(type === 'pyramid-bar' || type === 'polar-tangential-bar' || type === 'single-polar-bar'){
-    const combined = xAxisData.map((c, i) => ({
-      category: String(c || `Item-${i + 1}`),
-      value: Number(series[0]?.data?.[i] || 0)
-    }));
-    combined.sort((a, b) => b.value - a.value);
-    const sortedCategories = combined.map(item => item.category);
-    const sortedValues = combined.map(item => item.value);
-
-    if (type === 'pyramid-bar') {
-      const pairs = sortedCategories.map((c, i) => [c, sortedValues[i]]);
-      return {
-        xAxisData: sortedCategories,
-        series: [{ name: series[0]?.name || 'Series-1', data: sortedValues }],
-        dataPairs: pairs
-      };
-    }
-    return { categories: sortedCategories, data: sortedValues };
-  }
-
-  if(['donut','half-donut','rose'].includes(type)){
-    const vals = series[0]?.data || [];
-    return { data: xAxisData.map((c,i)=> ({ name: c, value: Number(vals[i]||0) })) };
-  }
-
-  // default for bar/line/polar-bar-series
-  return { xAxisData, series };
-}
+}    
 
 /* ================= Export PDF ================= */
 const dl = document.getElementById('download-pdf');
-if(dl) dl.addEventListener('click', ()=>{
-  if(!currentChart) return;
+if (dl) dl.addEventListener('click', () => {
+  if (!currentChart) return;
+
+  // Get today's date
   const now = new Date();
-  const fn = `${String(now.getDate()).padStart(2,'0')}${String(now.getMonth()+1).padStart(2,'0')}${now.getFullYear()}_Chart`;
-  try { if(currentChart.exportChartLocal) currentChart.exportChartLocal({ type: 'application/pdf', filename: fn }); else currentChart.exportChart({ type: 'application/pdf', filename: fn }); }
-  catch(e){ alert('Export failed: ' + (e.message || e)); }
+  const dd = String(now.getDate()).padStart(2, '0');
+  const mm = String(now.getMonth() + 1).padStart(2, '0'); // Month is 0-based
+  const yyyy = now.getFullYear();
+  const dateStr = dd + mm + yyyy;
+
+  // Generate random 6-character alphanumeric string
+  const randomStr = Math.random().toString(36).substring(2, 8).toUpperCase();
+
+  // Build filename
+  const fn = `${dateStr}_Chart_${randomStr}.pdf`;
+
+  // Export chart
+  try { 
+    if (currentChart.exportChartLocal) {
+      currentChart.exportChartLocal({ type: 'application/pdf', filename: fn }); 
+    } else {
+      currentChart.exportChart({ type: 'application/pdf', filename: fn }); 
+    }
+  } catch (e) { 
+    alert('Export failed: ' + (e.message || e)); 
+  }
 });
+
 </script>
 
 <script>
@@ -2550,5 +2852,95 @@ function showCenteredMessage(message) {
 }
 </script>
 
+
+<script>
+
+/* ------------------- Simple localStorage-based enhancer cache ------------------- */
+const ENHANCER_CACHE_KEY = 'icd_enhancer_cache_v1';
+const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+function resizeDataUrlIfNeeded(dataUrl, maxW=800, maxH=800, quality=0.8) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (!dataUrl || !dataUrl.startsWith('data:')) return resolve(dataUrl);
+      const img = new Image();
+      img.onload = () => {
+        const w = img.width, h = img.height;
+        if (w <= maxW && h <= maxH) return resolve(dataUrl);
+        const ratio = Math.min(maxW / w, maxH / h);
+        const cw = Math.round(w * ratio), ch = Math.round(h * ratio);
+        const canvas = document.createElement('canvas'); canvas.width = cw; canvas.height = ch;
+        const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0, cw, ch);
+        const out = canvas.toDataURL('image/jpeg', quality);
+        resolve(out);
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    } catch (err) { resolve(dataUrl); }
+  });
+}
+
+function renderEnhancerGrid(entries) {
+  const grid = document.getElementById('styleGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  (entries || []).forEach(s => {
+    const card = document.createElement('div'); card.className = 'style-card';
+    const img = document.createElement('img'); img.src = s.imageDataUrl || ''; img.alt = s.name || 'style'; img.loading='lazy';
+    const title = document.createElement('div'); title.className = 'style-title'; title.textContent = s.name || 'Style';
+    const ta = document.createElement('textarea'); ta.value = s.suffix || ''; ta.readOnly = true;
+    const copyBtn = document.createElement('button'); copyBtn.className = 'copy-btn'; copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(ta.value || ''); copyBtn.textContent = 'Copied!'; setTimeout(()=> copyBtn.textContent='Copy',900);
+      } catch(e) { alert('Copy failed: '+(e && e.message?e.message:e)); }
+    });
+    card.appendChild(img); card.appendChild(title); card.appendChild(ta); card.appendChild(copyBtn);
+    grid.appendChild(card);
+  });
+}
+
+async function loadEnhancerStylesSimple() {
+  try {
+    const raw = localStorage.getItem(ENHANCER_CACHE_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+		// Check if the cache is valid and less than the time-to-live
+		//	if (parsed && parsed.ts && (Date.now() - parsed.ts) < CACHE_TTL_MS && Array.isArray(parsed.entries) && parsed.entries.length) {
+		//		renderEnhancerGrid(parsed.entries);
+		//		return parsed.entries;
+		//	}
+		// Remove the timestamp check to use the cache indefinitely
+		if (parsed && Array.isArray(parsed.entries) && parsed.entries.length) {
+			renderEnhancerGrid(parsed.entries);
+			return parsed.entries;
+		}
+      } catch(e) { console.warn("enhancer cache parse failed", e); }
+    }
+    showFullScreenLoader("Loading prompt styles…");
+    const resp = await fetch(`${WEB_APP_URL}?action=getEnhancerStyles&token=${encodeURIComponent(window.AUTH_TOKEN||"")}`);
+    const j = await resp.json();
+    if (!j || !j.success || !Array.isArray(j.styles)) { hideFullScreenLoader(); return []; }
+    const out = [];
+    for (let i = 0; i < j.styles.length; i++) {
+      const s = j.styles[i];
+      let dataUrl = s.image || "";
+      if (dataUrl && !dataUrl.startsWith('data:')) dataUrl = "data:image/png;base64," + dataUrl;
+      if (!dataUrl) dataUrl = '';
+      try { dataUrl = await resizeDataUrlIfNeeded(dataUrl, 800, 800, 0.8); } catch(e){ console.warn(e); }
+      out.push({ id: String(i), name: s.name || '', suffix: s.suffix || '', imageDataUrl: dataUrl });
+    }
+    try { localStorage.setItem(ENHANCER_CACHE_KEY, JSON.stringify({ ts: Date.now(), entries: out })); } catch (e) { console.warn("saving enhancer cache failed", e); }
+    hideFullScreenLoader();
+    renderEnhancerGrid(out);
+    return out;
+  } catch (err) {
+    hideFullScreenLoader();
+    console.warn("loadEnhancerStylesSimple failed", err);
+    return [];
+  }
+}
+
+</script>
 </body>
 </html>
