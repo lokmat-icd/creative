@@ -659,7 +659,7 @@ a.btn:hover {
 
 <script>
 // ✅ PASTE YOUR SCRIPT URL HERE
-const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzeCbTpUQ49T2S4jqeUNnZh11eibUNMV2iKFoZ1tNBDFoX8vnoR5uFYfe7y8g26rr8K/exec";
+const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyxv3P33_TFUoE80ht01pKOSEchoSyHeCQbfpV0DqhwVf-BDqIoAD1BJWf7agom-Lxw/exec";
 
 // ===== User controls (show / hide + logout binding) =====
 function showUserControls(username) {
@@ -819,7 +819,6 @@ async function showLoginForm() {
         if (data.success) {
           // Pass the typed username to show in the title bar
           showUserControls(userInput.value.trim());
-
           window.AUTH_TOKEN  = data.token;
           window.AUTH_AUTHOR = data.author;
           window.AUTH_LOGO   = data.logo;
@@ -1042,7 +1041,9 @@ window.addEventListener("load", async () => {
   const savedToken = localStorage.getItem("AUTH_TOKEN");
   if (savedToken) {
     try {
-      const resp = await fetch(`${WEB_APP_URL}?action=validateSession&token=${encodeURIComponent(savedToken)}`);
+      const resp = await fetch(
+        `${WEB_APP_URL}?action=validateSession&token=${encodeURIComponent(savedToken)}`
+      );
       const data = await resp.json();
 
       if (data.success) {
@@ -1050,9 +1051,14 @@ window.addEventListener("load", async () => {
         window.AUTH_TOKEN = savedToken;
         isLoggedIn = true;
 
-        // Fetch logo again
+        // ⬅️ NEW: show username + logout links
+        showUserControls(data.username || "");
+
+        // Fetch logo again (optional)
         try {
-          const respLogo = await fetch(`${WEB_APP_URL}?action=getImage&token=${savedToken}`);
+          const respLogo = await fetch(
+            `${WEB_APP_URL}?action=getImage&token=${savedToken}`
+          );
           const logoData = await respLogo.json();
           if (logoData.success && logoData.image) {
             const imgEl = document.getElementById("dynamic-image");
@@ -1066,7 +1072,6 @@ window.addEventListener("load", async () => {
           console.warn("Logo fetch failed", e);
         }
 
-        // Continue to app
         await afterLoginInit();
         return;
       } else {
@@ -1086,6 +1091,7 @@ window.addEventListener("load", async () => {
     await afterLoginInit();
   }
 });
+
 
 
 // ===== Fetch Chart Configs =====
