@@ -1433,8 +1433,6 @@ async function ensureTableDataAndInit() {
 					</div>
 
                     <div id="assembly-controls" style="display:flex; gap:10px; align-items:center; font-size:12px;">
-                        <label>Arc Size <input type="number" id="assembly-arc-size" value="100" style="Width:35px; font-size:12px;"></label>
-                        <label>Arc Pos <input type="number" id="assembly-arc-pos" value="70" style="Width:35px; font-size:12px;"></label>
 						<div id="assembly-color-pickers" style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;"></div>
                     </div>
                 </div>
@@ -1639,9 +1637,10 @@ function toggleControls(chartType) {
   const roseRadiusControls = document.getElementById('rose-radius-controls');
   const cornerControls = document.getElementById('corner-controls');
   const assemblyControls = document.getElementById('assembly-controls');
+  const pyramidControls = document.getElementById('pyramid-controls'); // 🔹 add this
 
   // hide all
-  [barControlsInline, lineControls, donutRadiusControls, roseRadiusControls, cornerControls, assemblyControls]
+  [barControlsInline, lineControls, donutRadiusControls, roseRadiusControls, cornerControls, assemblyControls, pyramidControls]
     .forEach(el => el.style.display = 'none');
 
   if (['bar-vertical','bar-horizontal'].includes(chartType)) {
@@ -1668,18 +1667,17 @@ function toggleControls(chartType) {
   } else if (chartType === 'assembly-seats') {
     assemblyControls.style.display = 'flex';
     paletteControls.style.display = 'none';
+
+  } else if (chartType === 'pyramid-bar') {
+    paletteControls.style.display = 'block';
+    pyramidControls.style.display = 'flex';
   }
-  else if (chartType === 'pyramid-bar') {
-	  paletteControls.style.display = 'block';
-	  document.getElementById('pyramid-controls').style.display = 'flex';
-	} else {
-	  document.getElementById('pyramid-controls').style.display = 'none';
-	}
-	
+
   // Enable add column only for multi-series chart types
   const multiSeriesKeys = ['Chart01','Chart02','Chart07','Chart08','Chart09'];
   document.getElementById('btn-add-col').disabled = !multiSeriesKeys.includes(currentChartKey);
 }
+
 
 /* ================= Table building helpers ================= */
 function cellInput(val=''){
